@@ -1,0 +1,47 @@
+# -- Environment & secrets -----------------------------------------------------
+.env
+.env.local
+.env.*.local
+
+# -- Python runtime ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# -- Virtual environment -------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# -- Session data (audio, transcripts, Chroma DBs) ----------------------------
+# Keep the sessions/ folder itself (tracked via .gitkeep) but ignore all content.
+sessions/*/
+
+# -- Chroma vector store -------------------------------------------------------
+chroma/
+
+# -- Model cache (sentence-transformers auto-download) -------------------------
+.cache/
+models_cache/
+
+# -- Test / coverage artefacts -------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# -- Editor & OS ---------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
