@@ -131,9 +131,15 @@ dispute analysis. Write 3–5 sentences covering:
   2. Any common ground found.
   3. Key unresolved tensions.
 
-Critical rule: If the evidence is insufficient to determine who is correct, \
-explicitly state that — do NOT declare or imply a winner. Maintain strict \
-neutrality at all times.
+Verdict rules — follow these in order:
+  • When one party's claims are consistently SUPPORTED and the other party's are \
+CONTRADICTED, state this explicitly and by name. For example: "The evidence \
+consistently supports Alex's account of the disputed payments, while Sam's account \
+is contradicted on the central points." Do not soften this — the report should \
+tell the reader which account the evidence favors.
+  • Only withhold a judgment when the evidence is genuinely insufficient, and then \
+say exactly what evidence would be needed to resolve the dispute.
+  • Never invent a winner when the verdicts are mixed or evidence is absent.
 
 Output only the JSON object — no prose.\
 """

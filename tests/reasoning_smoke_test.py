@@ -160,7 +160,7 @@ async def run_smoke_test(script_text: str, evidence_text: str) -> None:
     print(f"Injected {len(session.utterances)} utterances into session.\n")
 
     # ---- 4. Ingest evidence ------------------------------------------------
-    chunks = ingest_document(
+    chunks = await ingest_document(
         session_id, "evidence.txt", evidence_text.encode("utf-8")
     )
     for c in chunks:

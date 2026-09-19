@@ -51,7 +51,7 @@ async def upload_evidence(
         )
 
     content = await file.read()
-    chunks = ingest_document(session_id, filename, content)
+    chunks = await ingest_document(session_id, filename, content)
 
     # Record in session.evidence for bookkeeping
     for chunk in chunks:

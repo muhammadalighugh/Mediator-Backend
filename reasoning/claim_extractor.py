@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from typing import TYPE_CHECKING
 
@@ -77,25 +78,60 @@ For each statement, classify it as ONE of:
   evidence_ref — a citation of a specific document, message thread, log, or record
   opinion      — a value judgment, preference, or normative position
 
-Rules:
-- ONE assertion per claim. SPLIT compound statements:
-  "I paid the rent that month and you still owe me half" →
-    TWO claims: "Alex paid the rent in March" + "Sam owes Alex half the March rent".
-- text field = the claim restated to stand alone, with ALL pronouns and vague references
-  resolved using conversation context:
-    "I covered that" (Sam, about internet) → "Sam covered the internet bill"
-    "I never agreed to that" (Sam) → "Sam never agreed to cover groceries"
-  verbatim_quote stays as the exact spoken words.
-- Statements that cite a source, document, log, or message thread — e.g. "Check the
-  messages from May 18th", "the log shows it", "look at the receipt" — are EVIDENCE_REF,
-  not CLAIM or FACT.
-- If two utterances assert the same thing in different words, output the claim ONCE.
-- Extract only statements that are substantive and potentially contestable.
-- SKIP: filler words, pure questions, greetings, agreement rituals ("okay", "sure", "right").
-- Each extracted item must include the verbatim quote exactly as spoken.
-- speaker_id must match the id field from the provided speakers list (or null if unknown).
-- confidence is your certainty that this is a genuinely debatable statement (0.0–1.0).
-- Aim for precision over recall: 3–8 high-quality claims is better than 20 weak ones.
+TWO TEXT FIELDS — do not confuse them:
+- verbatim_quote: the EXACT words the speaker said, unedited, no resolution.
+- text: the claim restated to STAND ALONE, with every pronoun and vague reference
+  resolved using conversation context, and the speaker named. This is the field
+  used for evidence matching, so it must make sense with zero surrounding context.
+
+  Example (scenario: Taylor lent Jordan a laptop):
+    Jordan says: "I returned it last week."
+      verbatim_quote: "I returned it last week"
+      text: "Jordan returned the borrowed laptop last week"
+    Jordan says: "I never agreed to that."  (responding to a claim about paying
+    for a cracked screen)
+      verbatim_quote: "I never agreed to that"
+      text: "Jordan never agreed to pay for the crack in the laptop screen"
+  Never leave "it", "that", "this", "him/her", or an unnamed "you"/"I" in `text`.
+  If you cannot confidently resolve a reference from context, resolve it as best
+  you can and lower `confidence` rather than leaving it unresolved.
+
+ATOMICITY — one assertion per claim. SPLIT compound statements into separate
+claim objects, each with its own verbatim_quote slice and resolved text:
+  Taylor says: "I lent you my laptop on Friday and you still haven't given it
+  back."
+    → claim 1: text "Taylor lent Jordan the laptop on Friday"
+    → claim 2: text "Jordan has not returned the laptop"
+  Do not merge two assertions into one claim just because they were spoken in
+  the same sentence.
+
+EVIDENCE_REF vs CLAIM/FACT — statements that point at a source rather than
+assert a fact are evidence_ref, e.g.:
+  "Check the chat from Friday" / "I texted you about it" / "the screenshot
+  shows I gave it back" → evidence_ref, NOT claim or fact.
+Contrast with a fact, which asserts the underlying event itself:
+  "I gave the laptop back on Tuesday" → fact.
+
+OPINION — value judgments and normative claims are never matched against
+evidence:
+  "You're always careless with other people's stuff" → opinion.
+
+SEMANTIC DEDUPE — if two utterances (from the same or different speakers)
+assert the same thing in different words, output that claim ONCE, using the
+clearest phrasing and the verbatim_quote from wherever it was first or most
+clearly stated:
+  "I gave it back already" and later "I returned the laptop days ago" →
+  ONE claim: "Jordan returned the laptop".
+
+Other rules:
+- speaker_id must match the id field from the provided speakers list (or null
+  if unknown).
+- confidence is your certainty that this is a genuinely debatable, correctly
+  typed, and correctly resolved statement (0.0–1.0).
+- SKIP: filler words, pure questions, greetings, agreement rituals ("okay",
+  "sure", "right").
+- Aim for precision over recall: 3–8 high-quality claims is better than 20
+  weak ones.
 
 Output only the JSON object — no prose.\
 """
@@ -109,11 +145,21 @@ def _build_user_prompt(utterances: list[Utterance], speakers_json: str) -> str:
     return "\n".join(lines)
 
 
+def _normalize_text(text: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace — for semantic dedupe
+    of claim `text` (not verbatim_quote)."""
+    text = text.lower()
+    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 async def extract_claims(
     utterances: list[Utterance],
     session: "Session",
 ) -> list[Claim]:
-    """Call LLM, parse response, dedupe and store claims on session."""
+    """Call LLM, parse response, dedupe (by normalized `text`) and store claims
+    on session."""
     if not utterances:
         return []
 
@@ -128,6 +174,12 @@ async def extract_claims(
         schema=CLAIMS_SCHEMA,
         max_tokens=2000,
     )
+
+    # Dedupe against normalized `text`, not verbatim_quote: two claims can be
+    # worded completely differently and still assert the same thing, and the
+    # same wording spoken twice can still resolve to different claims via
+    # pronoun resolution.
+    seen_normalized = {_normalize_text(c.text) for c in session.claims}
 
     new_claims: list[Claim] = []
     for item in result.get("claims", []):
@@ -145,6 +197,12 @@ async def extract_claims(
             start_ms=int(item.get("start_ms", 0)),
             confidence=float(item.get("confidence", 0.7)),
         )
+
+        normalized = _normalize_text(claim.text)
+        if normalized in seen_normalized:
+            continue
+        seen_normalized.add(normalized)
+
         added = await session.add_claim(claim)
         if added:
             new_claims.append(claim)

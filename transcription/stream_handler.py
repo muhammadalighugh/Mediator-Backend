@@ -13,12 +13,23 @@ Speaker label handling:
   PATH 2 — turn.speaker_label is None/empty:
       store speaker_id=None; a later async diarization step over the saved
       WAV will backfill attribution.
+
+Garbage filter (final transcripts only — partials are never filtered):
+  A final transcript is discarded (not stored, not broadcast) if ANY of:
+    - fewer than 3 words
+    - purely digits/punctuation once non-alphanumeric characters are stripped
+      (e.g. "16124", "...", "12, 34")
+    - a single word that matches a known speaker's display name (e.g. "Alex.")
+  The single-word-name check is a subset of the <3-word check today, but is
+  kept as its own explicit condition so it still holds if the word-count
+  threshold ever changes.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from typing import TYPE_CHECKING, Callable, Set
 
@@ -30,6 +41,22 @@ from transcription.speaker_mapper import SpeakerMapper
 if TYPE_CHECKING:
     from core.session import Session
     from fastapi.websockets import WebSocket
+
+# Strips anything that isn't a letter/digit/underscore — used both to test
+# "purely digits/punctuation" and to normalize a single word before comparing
+# it against speaker display names.
+_NON_ALNUM_RE = re.compile(r"[^\w]", re.UNICODE)
+
+
+def _is_purely_digits_or_punct(text: str) -> bool:
+    """True for ASR noise like '16124', '...', or '12, 34' — i.e. nothing
+    but digits/punctuation once non-alphanumeric characters are stripped."""
+    stripped = _NON_ALNUM_RE.sub("", text)
+    return stripped == "" or stripped.isdigit()
+
+
+def _normalize_word(word: str) -> str:
+    return _NON_ALNUM_RE.sub("", word).lower()
 
 
 class StreamHandler:
@@ -75,6 +102,38 @@ class StreamHandler:
             asyncio.run(self._process_turn(turn))
 
     # ------------------------------------------------------------------
+    # Garbage filter helpers
+    # ------------------------------------------------------------------
+
+    def _known_speaker_names(self) -> set[str]:
+        """Normalized display names of speakers known to this session."""
+        return {
+            _normalize_word(name)
+            for name in (
+                getattr(s, "display_name", None)
+                for s in getattr(self._session, "speakers", [])
+            )
+            if name
+        }
+
+    def _is_garbage_final(self, text: str) -> bool:
+        text = (text or "").strip()
+        words = text.split()
+
+        if len(words) < 3:
+            # Covers empty/short fragments AND single-word speaker names
+            # (e.g. "Alex.") since a name match is always a single word.
+            return True
+
+        if _is_purely_digits_or_punct(text):
+            return True
+
+        if len(words) == 1 and _normalize_word(words[0]) in self._known_speaker_names():
+            return True
+
+        return False
+
+    # ------------------------------------------------------------------
     # Internal async processing
     # ------------------------------------------------------------------
 
@@ -101,14 +160,9 @@ class StreamHandler:
         }
 
         if is_final:
-            # ---- Garbage filter: discard final transcripts that are
-            #      under 3 words, purely numeric, or a bare name/punctuation.
-            text = (turn.transcript or "").strip()
-            text_words = text.split()
-            if (
-                len(text_words) < 3
-                or text.replace(".", "").replace(",", "").isdigit()
-            ):
+            # ---- Garbage filter: discard final transcripts that are too
+            #      short, pure digits/punctuation, or a bare speaker name.
+            if self._is_garbage_final(turn.transcript):
                 # Silently drop — do not store or broadcast
                 return
 
@@ -133,6 +187,7 @@ class StreamHandler:
             )
         else:
             # ---- Partial transcript: broadcast only, do NOT store --------
+            # (garbage filter intentionally does not apply to partials)
             await self._broadcast({"type": "transcript_partial", **payload})
 
     async def _broadcast(self, message: dict) -> None:

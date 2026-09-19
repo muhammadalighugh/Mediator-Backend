@@ -11,7 +11,9 @@ Architecture:
 - NO per-claim Chroma vector query (vector_store.py kept for future scaling)
 - NO_MATCH → INSUFFICIENT_EVIDENCE in the final report
 
-Eligible types: CLAIM, FACT, ASSUMPTION (OPINION / EVIDENCE_REF skipped)
+Eligible types: CLAIM, FACT, ASSUMPTION, EVIDENCE_REF  (OPINION only is skipped)
+EVIDENCE_REF claims ("the log shows…", "check the message from…") ARE evaluated
+against the corpus — they are checkable assertions, not mere opinions.
 """
 
 from __future__ import annotations
@@ -24,7 +26,12 @@ from reasoning.llm_client import llm_client
 
 logger = logging.getLogger(__name__)
 
-_ELIGIBLE_TYPES = {StatementType.CLAIM, StatementType.FACT, StatementType.ASSUMPTION}
+_ELIGIBLE_TYPES = {
+    StatementType.CLAIM,
+    StatementType.FACT,
+    StatementType.ASSUMPTION,
+    StatementType.EVIDENCE_REF,
+}
 _BATCH_SIZE = 10
 _MAX_CLAIMS = 12   # batched above this; each batch still gets the full corpus
 
