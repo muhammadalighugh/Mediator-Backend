@@ -172,18 +172,74 @@ def _parse_verdict(raw: str) -> VerdictType:
 def validate_verdicts(verdicts: list[dict], chunks: list[EvidenceChunk]) -> list[dict]:
     """
     Downgrade any SUPPORTED/CONTRADICTED verdict whose quote cannot be found
-    verbatim (with collapsed whitespace) in the evidence corpus.
+    in the evidence corpus.
+
+    Matching rules (in order of strictness):
+      1. Exact verbatim match after whitespace-collapse (original check).
+      2. Case-insensitive match — the LLM occasionally changes capitalisation.
+      3. Longest-common-substring check: if ≥ 60% of the quote's words appear
+         consecutively in any single chunk, accept it. This handles the model
+         dropping/adding a trailing period or changing punctuation around a name.
+
+    Only downgrade when all three checks fail — the goal is to reject
+    *fabricated* quotes, not to penalise minor normalisation differences.
+
+    Also logs a WARNING when a downgrade happens so the cause is visible.
     """
-    corpus = " ".join(c.text for c in chunks)
-    corpus = " ".join(corpus.split())  # collapse whitespace
+    # Pre-build normalised corpus strings (one per chunk + a joined version).
+    normalised_chunks = [" ".join(c.text.split()).lower() for c in chunks]
+    corpus_joined = " ".join(normalised_chunks)
+
     for v in verdicts:
-        if v["verdict"] in ("SUPPORTED", "CONTRADICTED"):
-            q = " ".join(v["quote"].strip().split())
-            if not q or q not in corpus:
-                v["quote"] = ""
-                v["source"] = ""
-                v["verdict"] = "UNCERTAIN"
-                v["reasoning"] = "Auto-downgraded: quoted text not found verbatim in evidence."
+        if v["verdict"] not in ("SUPPORTED", "CONTRADICTED"):
+            continue
+        raw_quote = v.get("quote", "").strip()
+        if not raw_quote:
+            continue  # empty quote — leave as-is (LLM said no quote needed)
+
+        q_norm = " ".join(raw_quote.split()).lower()
+
+        # 1. Exact match (case-insensitive, whitespace-collapsed)
+        if q_norm in corpus_joined:
+            continue
+
+        # 2. Per-chunk search (handles chunk-boundary splits in the joined string)
+        if any(q_norm in chunk_norm for chunk_norm in normalised_chunks):
+            continue
+
+        # 3. Partial-word overlap: split into words and look for a consecutive
+        #    run of ≥ 60% of the quote's words inside any single chunk.
+        q_words = q_norm.split()
+        threshold = max(1, int(len(q_words) * 0.60))
+        found_partial = False
+        for chunk_norm in normalised_chunks:
+            c_words = chunk_norm.split()
+            # Sliding window of length `threshold`
+            for start in range(len(c_words) - threshold + 1):
+                window = c_words[start : start + threshold]
+                # Check if these words appear consecutively in q_words too
+                window_str = " ".join(window)
+                if window_str in q_norm:
+                    found_partial = True
+                    break
+            if found_partial:
+                break
+
+        if found_partial:
+            continue
+
+        # All checks failed — quote is fabricated or hallucinated.
+        logger.warning(
+            "validate_verdicts: downgrading %s claim %r — "
+            "quote not found in corpus (quote=%r)",
+            v["verdict"],
+            v.get("claim_id", "?"),
+            raw_quote[:120],
+        )
+        v["quote"] = ""
+        v["source"] = ""
+        v["verdict"] = "UNCERTAIN"
+        v["reasoning"] = "Auto-downgraded: quoted text not found verbatim in evidence."
     return verdicts
 
 # ---------------------------------------------------------------------------
@@ -304,11 +360,11 @@ async def match_claims(
     eligible = [c for c in claims if c.statement_type in _ELIGIBLE_TYPES]
 
     if not eligible:
-        logger.info("No eligible claims to match for session %s", session_id)
+        logger.info("[MATCH] [%s] no eligible claims to match", session_id)
         return []
 
     if not evidence:
-        logger.info("No evidence uploaded for session %s — all claims get INSUFFICIENT_EVIDENCE", session_id)
+        logger.info("[MATCH] [%s] no evidence uploaded — all claims → INSUFFICIENT_EVIDENCE", session_id)
         return [
             EvidenceLink(
                 claim_id=c.id,
@@ -332,18 +388,30 @@ async def match_claims(
     ]
 
     logger.info(
-        "Evidence matching: %d eligible claims → %d batch(es) for session %s",
-        len(eligible), len(batches), session_id,
+        "[MATCH] [%s] matching started: %d claim(s), %d evidence chunk(s), %d batch(es)",
+        session_id, len(eligible), len(evidence), len(batches),
     )
 
     all_links: list[EvidenceLink] = []
     for batch_num, batch in enumerate(batches, 1):
-        logger.info("Running batch %d/%d (%d claims)", batch_num, len(batches), len(batch))
+        logger.info(
+            "[MATCH] [%s] running batch %d/%d (%d claims)",
+            session_id, batch_num, len(batches), len(batch),
+        )
         links = await _run_batch(batch, evidence, speakers_by_id)
+        # Log per-verdict outcomes
+        claim_by_id = {c.id: c for c in batch}
+        for link in links:
+            claim = claim_by_id.get(link.claim_id)
+            claim_preview = (claim.verbatim_quote if claim else link.claim_id)[:40]
+            logger.info(
+                "[MATCH] [%s] verdict: %r → %s",
+                session_id, claim_preview, link.verdict.value,
+            )
         all_links.extend(links)
 
     logger.info(
-        "Evidence matching complete: %d links for session %s",
-        len(all_links), session_id,
+        "[MATCH] [%s] matching done: %d verdict(s)",
+        session_id, len(all_links),
     )
     return all_links

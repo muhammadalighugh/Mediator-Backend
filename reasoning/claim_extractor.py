@@ -130,6 +130,10 @@ Other rules:
   typed, and correctly resolved statement (0.0–1.0).
 - SKIP: filler words, pure questions, greetings, agreement rituals ("okay",
   "sure", "right").
+- SKIP vague, non-debatable statements that contain no checkable assertion —
+  e.g. "I remember something", "that happens", "it is what it is", "things
+  were difficult", "stuff happened". Only extract statements that could
+  concretely be verified or disputed.
 - Aim for precision over recall: 3–8 high-quality claims is better than 20
   weak ones.
 
@@ -137,11 +141,34 @@ Output only the JSON object — no prose.\
 """
 
 
-def _build_user_prompt(utterances: list[Utterance], speakers_json: str) -> str:
+_ALREADY_EXTRACTED_LIMIT = 15  # cap to keep the prompt size bounded
+
+
+def _build_user_prompt(
+    utterances: list[Utterance],
+    speakers_json: str,
+    existing_claims: list[Claim],
+    speaker_names: dict[str, str],   # speaker_id → display_name
+) -> str:
     lines = [f"Speakers: {speakers_json}", "", "Transcript:"]
     for u in utterances:
-        spk = u.speaker_id or "unknown"
-        lines.append(f"[{spk}] ({u.start_ms}ms) {u.text}")
+        # Use the real display name so the LLM can resolve pronouns and name
+        # claims correctly ("Maya covered Daniel's shift", not "speaker_0 …").
+        name = speaker_names.get(u.speaker_id or "", u.speaker_id or "Unknown")
+        lines.append(f"[{name}] ({u.start_ms}ms) {u.text}")
+
+    # Append the already-extracted hint so the LLM skips paraphrase duplicates.
+    # Use the most recent claims (tail of the list) when truncating.
+    if existing_claims:
+        recent = existing_claims[-_ALREADY_EXTRACTED_LIMIT:]
+        lines.append("")
+        lines.append(
+            "Already-extracted claims — do NOT output any claim whose assertion "
+            "is already covered by this list, in any wording:"
+        )
+        for c in recent:
+            lines.append(f"- {c.text}")
+
     return "\n".join(lines)
 
 
@@ -163,10 +190,22 @@ async def extract_claims(
     if not utterances:
         return []
 
+    logger.info(
+        "[EXTRACT] [%s] extraction started: %d utterance(s)",
+        session.id, len(utterances),
+    )
+
+    speaker_names: dict[str, str] = {
+        s.id: s.display_name for s in session.speakers
+    }
     speakers_json = json.dumps(
         [{"id": s.id, "display_name": s.display_name} for s in session.speakers]
     )
-    user_prompt = _build_user_prompt(utterances, speakers_json)
+    # Pass snapshot of current claims so the LLM skips paraphrase duplicates.
+    # Take the snapshot under no lock — a stale read of ~15 items is fine here;
+    # the normalized-text dedupe below is the authoritative guard.
+    existing_claims = list(session.claims)
+    user_prompt = _build_user_prompt(utterances, speakers_json, existing_claims, speaker_names)
 
     result = await llm_client.complete_json(
         system=_SYSTEM_PROMPT,
@@ -208,9 +247,8 @@ async def extract_claims(
             new_claims.append(claim)
 
     logger.info(
-        "Extracted %d new claims for session %s",
-        len(new_claims),
-        session.id,
+        "[EXTRACT] [%s] extraction done: %d new claim(s) (total in session: %d)",
+        session.id, len(new_claims), len(session.claims),
     )
     return new_claims
 

@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import uuid
-from typing import TYPE_CHECKING, Callable, Set
+from typing import TYPE_CHECKING, Set
 
 from assemblyai.streaming.v3.models import TurnEvent
 
@@ -41,6 +42,8 @@ from transcription.speaker_mapper import SpeakerMapper
 if TYPE_CHECKING:
     from core.session import Session
     from fastapi.websockets import WebSocket
+
+logger = logging.getLogger(__name__)
 
 # Strips anything that isn't a letter/digit/underscore — used both to test
 # "purely digits/punctuation" and to normalize a single word before comparing
@@ -138,38 +141,49 @@ class StreamHandler:
     # ------------------------------------------------------------------
 
     async def _process_turn(self, turn: TurnEvent) -> None:
+        sid = self._session.id
+        raw_label = getattr(turn, "speaker_label", None)
+        is_final = turn.end_of_turn
+
         # ---- Speaker resolution ----------------------------------------
-        # PATH 1: SDK provided a speaker label
-        # PATH 2: no label → defer to post-session diarization
-        speaker_id: str | None = self._mapper.resolve(
-            getattr(turn, "speaker_label", None)
-        )
+        # PATH 1: SDK provided a speaker label → resolve via mapper
+        # PATH 2: no label → None; post-session WAV diarization will backfill
+        speaker_id: str | None = self._mapper.resolve(raw_label)
 
         # start_ms / end_ms: derive from Word timestamps when available
         words = turn.words or []
         start_ms = words[0].start if words else 0
         end_ms = words[-1].end if words else 0
 
-        is_final = turn.end_of_turn
-
-        payload: dict = {
-            "speaker_id": speaker_id,
-            "text": turn.transcript,
-            "start_ms": start_ms,
-            "end_ms": end_ms,
-        }
+        text_preview = (turn.transcript or "")[:40]
 
         if is_final:
-            # ---- Garbage filter: discard final transcripts that are too
-            #      short, pure digits/punctuation, or a bare speaker name.
+            label_repr = repr(raw_label) if raw_label is not None else "MISSING"
+            logger.info(
+                "[RT] [%s] FINAL received: speaker=%s text=%r",
+                sid, label_repr, text_preview,
+            )
+
+            # ---- Garbage filter ----------------------------------------
             if self._is_garbage_final(turn.transcript):
-                # Silently drop — do not store or broadcast
+                words_count = len((turn.transcript or "").split())
+                reason = (
+                    f"len={words_count}<3" if words_count < 3
+                    else "digits/punct" if _is_purely_digits_or_punct(turn.transcript)
+                    else "bare-name"
+                )
+                logger.info(
+                    "[FILTER] [%s] garbage filter: dropped %r (reason: %s)",
+                    sid, text_preview, reason,
+                )
                 return
 
-            # ---- Final transcript: persist as Utterance -----------------
+            logger.info("[FILTER] [%s] garbage filter: kept %r", sid, text_preview)
+
+            # ---- Persist as Utterance ----------------------------------
             utterance = Utterance(
                 id=str(uuid.uuid4()),
-                session_id=self._session.id,
+                session_id=sid,
                 speaker_id=speaker_id,
                 text=turn.transcript,
                 is_final=True,
@@ -177,24 +191,42 @@ class StreamHandler:
                 end_ms=end_ms,
             )
             await self._session.add_utterance(utterance)
+            logger.info(
+                "[UTT] [%s] stored utterance: speaker=%s start=%d",
+                sid, speaker_id, start_ms,
+            )
 
             await self._broadcast(
                 {
                     "type": "transcript_final",
-                    **payload,
+                    "speaker_id": speaker_id,
+                    "text": turn.transcript,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
                     "utterance_id": utterance.id,
                 }
             )
         else:
+            logger.info("[RT] [%s] partial received: %r", sid, text_preview)
             # ---- Partial transcript: broadcast only, do NOT store --------
-            # (garbage filter intentionally does not apply to partials)
-            await self._broadcast({"type": "transcript_partial", **payload})
+            await self._broadcast({
+                "type": "transcript_partial",
+                "speaker_id": speaker_id,
+                "text": turn.transcript,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+            })
 
     async def _broadcast(self, message: dict) -> None:
         """Send a JSON frame to all connected WebSocket clients."""
         text = json.dumps(message)
         async with self._ws_lock:
             clients = list(self._ws_clients)
+
+        logger.info(
+            "[BCAST] [%s] broadcast to %d client(s): %s",
+            self._session.id, len(clients), message.get("type"),
+        )
 
         dead: list = []
         for ws in clients:

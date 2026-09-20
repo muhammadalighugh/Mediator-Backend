@@ -54,6 +54,23 @@ class ContradictionFlag(BaseModel):
     resolved: bool = False
 
 
+class EnrollmentRecord(BaseModel):
+    """Binding between a spoken name and the realtime speaker label that said it."""
+    speaker_name: str          # extracted name, e.g. "Sam"
+    realtime_label: str        # AssemblyAI label, e.g. "A" or "B"
+    start_ms: int              # start of the enrollment utterance
+    end_ms: int                # end of the enrollment utterance
+
+
+class SpeakerAssessment(BaseModel):
+    """Deterministic per-speaker verdict tally computed from EvidenceLink list."""
+    speaker_id: str
+    supported: int
+    contradicted: int
+    uncertain: int             # UNCERTAIN + INSUFFICIENT_EVIDENCE combined
+    checkable_total: int       # supported + contradicted (excludes uncertain)
+
+
 class MediationReport(BaseModel):
     session_id: str
     claims: list[Claim]
@@ -62,3 +79,4 @@ class MediationReport(BaseModel):
     agreements: list[str]           # free-text agreement summaries
     dispute_type: str
     summary: str
+    assessments: list[SpeakerAssessment] = Field(default_factory=list)

@@ -98,6 +98,16 @@ async def get_session_debug(session_id: str) -> dict:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Session {session_id!r} not found",
         )
+    # Include evidence chunk texts so callers can verify verbalization ran.
+    evidence_chunks = [
+        {
+            "id": c.id,
+            "source_name": c.source_name,
+            "chunk_index": c.chunk_index,
+            "text": c.text,
+        }
+        for c in session.evidence
+    ]
     return {
         "id": session.id,
         "created_at": session.created_at.isoformat(),
@@ -106,5 +116,6 @@ async def get_session_debug(session_id: str) -> dict:
         "utterance_count": len(session.utterances),
         "claim_count": len(session.claims),
         "evidence_chunk_count": len(session.evidence),
+        "evidence_chunks": evidence_chunks,
         "has_report": hasattr(session, "report") and session.report is not None,
     }

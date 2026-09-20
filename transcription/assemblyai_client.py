@@ -9,13 +9,14 @@ Callers:
   2. Register callbacks BEFORE connecting:
        client.on_turn(handler)   # called with (TurnEvent)
        client.on_error(handler)  # called with (RealTimeError)
-  3. await client.connect(sample_rate)
+  3. await client.connect(sample_rate, session_id=...)
   4. await client.stream(pcm_bytes)  — repeatedly, from audio chunks
   5. await client.disconnect()       — graceful teardown
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Callable, Optional
 
 from assemblyai.streaming.v3.async_client import AsyncStreamingClient
@@ -25,6 +26,8 @@ from assemblyai.streaming.v3.models import (
     RealTimeParameters,
     TurnEvent,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AssemblyAIClient:
@@ -60,13 +63,14 @@ class AssemblyAIClient:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self, sample_rate: int = 16000) -> None:
+    async def connect(self, sample_rate: int = 16000, session_id: str = "") -> None:
         """Open the WebSocket connection and start read/write loops."""
         params = RealTimeParameters(
             sample_rate=sample_rate,
             speaker_labels=True,    # request per-speaker labels when available
         )
         await self._client.connect(params)
+        logger.info("[RT] [%s] transcriber connected (sample_rate=%d)", session_id, sample_rate)
 
     async def stream(self, pcm_bytes: bytes) -> None:
         """Send a chunk of raw 16-bit PCM to AssemblyAI."""

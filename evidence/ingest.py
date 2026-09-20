@@ -295,9 +295,15 @@ async def ingest_document(
                 filename,
                 session_id,
             )
+            for i, (raw, sentence) in enumerate(zip(rows, sentences)):
+                logger.debug(
+                    "  row %d: %r → %r", i, raw[:80], sentence[:120]
+                )
         except Exception as exc:
             logger.warning(
-                "CSV verbalization failed for %r (%s) — storing raw rows",
+                "CSV verbalization failed for %r (%s) — storing raw rows. "
+                "Check LLM_PROVIDER / LLM_API_KEY in .env and confirm the "
+                "LLM endpoint is reachable.",
                 filename,
                 exc,
             )
