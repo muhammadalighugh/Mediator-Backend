@@ -4,7 +4,10 @@ http_routes.py
 REST endpoints:
   POST /upload-evidence/{session_id}   — multipart file upload
   GET  /report/{session_id}            — MediationReport JSON
+  GET  /report/{session_id}/pdf        — MediationReport as a downloadable PDF
   GET  /session/{session_id}           — debug dump of session state
+
+All routes require a valid Bearer JWT (from POST /auth/login or /auth/register).
 """
 
 from __future__ import annotations
@@ -12,14 +15,17 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
+import io
 
+from api.auth_routes import get_current_user
 from core.session import session_manager
 from evidence.ingest import ingest_document
-from models.schemas import MediationReport
+from models.schemas import MediationReport, User
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 _ALLOWED_EXTENSIONS = {".txt", ".md", ".csv", ".pdf"}
 
@@ -85,6 +91,52 @@ async def get_report(session_id: str) -> MediationReport:
             detail="Report not yet generated. Send end_session first.",
         )
     return report
+
+
+@router.get(
+    "/report/{session_id}/pdf",
+    summary="Download the MediationReport as a PDF",
+    response_class=StreamingResponse,
+)
+async def get_report_pdf(session_id: str) -> StreamingResponse:
+    session = await session_manager.get(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id!r} not found",
+        )
+
+    report = getattr(session, "report", None)
+    if report is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report not yet generated. Send end_session first.",
+        )
+
+    # Build speakers list from the session for speaker-id → name mapping
+    speakers = list(session.speakers) if session.speakers else []
+
+    try:
+        from reporting.pdf_report import build_pdf
+        pdf_bytes = build_pdf(report, speakers)
+    except Exception as exc:
+        logger.exception("PDF generation failed for session %s: %s", session_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"PDF generation failed: {exc}",
+        ) from exc
+
+    safe_id = session_id.replace("/", "_").replace("\\", "_")
+    filename = f"mediation-report-{safe_id}.pdf"
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(pdf_bytes)),
+        },
+    )
 
 
 @router.get(

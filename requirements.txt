@@ -1,4 +1,6 @@
 fastapi>=0.111.0
+motor>=3.4.0
+reportlab>=4.2.0
 uvicorn[standard]>=0.29.0
 assemblyai>=0.26.0
 pydantic>=2.7.0
@@ -15,3 +17,5 @@ sentence-transformers>=3.0.0
 pypdf>=4.0.0
 # Voice identification
 resemblyzer>=0.1.1.dev0
+# Auth — password hashing + JWT
+python-jose[cryptography]>=3.3.0

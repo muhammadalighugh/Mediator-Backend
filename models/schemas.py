@@ -1,8 +1,34 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, Field
 from .enums import StatementType, VerdictType
+
+
+# ---------------------------------------------------------------------------
+# Auth / user
+# ---------------------------------------------------------------------------
+
+class User(BaseModel):
+    id: str                    # UUID, stable per email
+    name: str
+    email: str
+    created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Persisted session summary (written to Atlas after report is built)
+# ---------------------------------------------------------------------------
+
+class SessionSummary(BaseModel):
+    session_id: str
+    user_email: Optional[str]  # None for guest / unauthenticated sessions
+    created_at: datetime
+    speakers: list[str]
+    claim_count: int
+    summary: str               # the one-line dispute summary from MediationReport
+    report: dict               # full MediationReport as a plain dict
 
 
 class Speaker(BaseModel):

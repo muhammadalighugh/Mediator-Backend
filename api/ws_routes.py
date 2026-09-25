@@ -53,6 +53,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from core.config import settings
+from core.security import decode_token
 from core.session import session_manager
 from models.schemas import EnrollmentRecord
 from reasoning.enrollment import extract_name
@@ -110,9 +111,17 @@ async def _run_analysis(session, websocket: WebSocket) -> None:
 # ---------------------------------------------------------------------------
 
 @router.websocket("/ws/session/{session_id}")
-async def session_ws(websocket: WebSocket, session_id: str) -> None:
+async def session_ws(websocket: WebSocket, session_id: str, token: str = "", user_email: str = "") -> None:
+    # Validate JWT — reject unauthenticated connections immediately
+    payload = decode_token(token) if token else None
+    if payload is None:
+        await websocket.accept()
+        await websocket.send_text(json.dumps({"type": "error", "detail": "Unauthorized"}))
+        await websocket.close(code=4401)
+        return
+
     await websocket.accept()
-    logger.info("[WS] connection opened: %s", session_id)
+    logger.info("[WS] connection opened: %s (user=%s)", session_id, payload.get("sub"))
 
     session = None
     transcriber: AssemblyAIClient | None = None
@@ -167,6 +176,7 @@ async def session_ws(websocket: WebSocket, session_id: str) -> None:
 
     async def _build_and_broadcast_report(session, ws: WebSocket) -> None:
         from reasoning.mediation_report import build_report
+        from api.session_routes import persist_session
         from starlette.websockets import WebSocketDisconnect as _WSD
         try:
             report = await build_report(session)
@@ -181,6 +191,16 @@ async def session_ws(websocket: WebSocket, session_id: str) -> None:
                     "WS closed before report delivery for %s — "
                     "client can poll GET /report/%s", session_id, session_id,
                 )
+            # Persist to Atlas (fire-and-forget; no-ops if Mongo is down)
+            speaker_names = [s.display_name for s in session.speakers]
+            asyncio.create_task(
+                persist_session(
+                    report,
+                    speakers=speaker_names,
+                    user_email=user_email or None,
+                ),
+                name=f"persist_{session_id}",
+            )
         except Exception as exc:
             logger.exception("Report build failed for %s: %s", session_id, exc)
             try:

@@ -21,6 +21,12 @@ class Settings(BaseSettings):
 
     sample_rate: int = 16000
 
+    # MongoDB Atlas — optional persistence
+    mongodb_uri: str = ""
+
+    # Auth — secret used to sign session tokens (HMAC-SHA256)
+    jwt_secret: str = "change-me-in-production"
+
 
 settings = Settings()
 
