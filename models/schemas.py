@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 from .enums import StatementType, VerdictType
 
@@ -28,6 +28,7 @@ class SessionSummary(BaseModel):
     speakers: list[str]
     claim_count: int
     summary: str               # the one-line dispute summary from MediationReport
+    report_kind: Literal["dispute", "conversation"] = "dispute"
     report: dict               # full MediationReport as a plain dict
 
 
@@ -106,3 +107,4 @@ class MediationReport(BaseModel):
     dispute_type: str
     summary: str
     assessments: list[SpeakerAssessment] = Field(default_factory=list)
+    report_kind: Literal["dispute", "conversation"] = "dispute"

@@ -21,6 +21,7 @@ Server → client frames
   {"type":"enrollment_result", "slot":1, "name":null}
   {"type":"enrollment_result", "slot":2, "name":null, "duplicate_of":"Sam"}
   {"type":"enrollment_result", "slot":2, "name":null, "give_up":true}
+  {"type":"speakers_updated",  "speakers":[{"id":"speaker_0","display_name":"Maya","color":"..."},...]}
   {"type":"transcript_partial", "speaker_id":..., "text":..., "start_ms":..., "end_ms":...}
   {"type":"transcript_final",   "speaker_id":..., "text":..., "start_ms":..., "end_ms":..., "utterance_id":...}
   {"type":"claims_updated",     "claims":[...]}
@@ -409,6 +410,19 @@ async def session_ws(websocket: WebSocket, session_id: str, token: str = "", use
                 logger.info(
                     "[SESSION] [%s] speakers set: %s",
                     session_id,
+                    [s.display_name for s in mapper.speakers],
+                )
+
+                # Broadcast resolved speaker names so the client can rename
+                # any transcript rows that arrived before enrollment completed.
+                # This fires even on the positional path so the client always
+                # gets authoritative speaker data from the backend.
+                await websocket.send_text(json.dumps({
+                    "type": "speakers_updated",
+                    "speakers": [s.model_dump() for s in mapper.speakers],
+                }))
+                logger.info(
+                    "[ENROLL] speakers_updated broadcast: %s",
                     [s.display_name for s in mapper.speakers],
                 )
 

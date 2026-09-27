@@ -273,6 +273,9 @@ def build_pdf(
     *speakers* is the list of Speaker objects from the live session; used to
     map speaker_id → display_name.  Falls back to speaker_id strings when
     absent.
+
+    For report_kind == "conversation" a single friendly page is emitted
+    instead of the full verdict table.
     """
     speaker_map: dict[str, str] = {}
     if speakers:
@@ -295,24 +298,29 @@ def build_pdf(
         rightMargin=MARGIN,
         topMargin=22 * mm,
         bottomMargin=22 * mm,
-        title="Mediation Report",
+        title="Session Summary" if getattr(report, "report_kind", "dispute") == "conversation"
+              else "Mediation Report",
         author="MediFact",
     )
 
     story: list = []
 
     # -----------------------------------------------------------------------
-    # HEADER
+    # HEADER (shared by both kinds)
     # -----------------------------------------------------------------------
     now_str = datetime.now(tz=timezone.utc).strftime("%d %b %Y, %H:%M UTC")
     session_short = report.session_id[:16] + ("…" if len(report.session_id) > 16 else "")
 
-    # Two-column header table: title left, meta right
+    report_kind = getattr(report, "report_kind", "dispute")
+    is_conversation = (report_kind == "conversation")
+
+    title_text = "Session Summary" if is_conversation else "Mediation Report"
+
     header_data = [[
         [
             Paragraph("&#9878; MediFact", styles["title"]),
             Spacer(1, 1 * mm),
-            Paragraph("Mediation Report", styles["subtitle"]),
+            Paragraph(title_text, styles["subtitle"]),
         ],
         [
             Paragraph(now_str, styles["meta"]),
@@ -332,6 +340,53 @@ def build_pdf(
     story.append(Spacer(1, 2 * mm))
     story.append(HRFlowable(width="100%", thickness=1.0, color=_C_HEADER_TEXT))
     story.append(Spacer(1, 3 * mm))
+
+    # -----------------------------------------------------------------------
+    # CONVERSATION KIND — friendly single page, stop here
+    # -----------------------------------------------------------------------
+    if is_conversation:
+        story.append(
+            Paragraph(
+                '<font name="Helvetica-Bold" color="#1a9e5a">&#10003; FRIENDLY CONVERSATION</font>',
+                styles["body_left"],
+            )
+        )
+        story.append(Spacer(1, 6 * mm))
+
+        # Participant names
+        spk_names = [sp.display_name for sp in (speakers or [])]
+        if spk_names:
+            names_str = " and ".join(spk_names) if len(spk_names) <= 2 else ", ".join(spk_names)
+        else:
+            names_str = "the participants"
+        story.append(
+            Paragraph(
+                f'<b>Participants:</b> {_safe(names_str)}',
+                styles["body_left"],
+            )
+        )
+        story.append(Spacer(1, 4 * mm))
+
+        story += _section_head("Summary", styles)
+        story.append(Paragraph(_safe(report.summary), styles["body"]))
+        story.append(Spacer(1, 6 * mm))
+
+        story.append(HRFlowable(width="100%", thickness=0.5, color=_C_DIVIDER))
+        story.append(Spacer(1, 2 * mm))
+        story.append(
+            Paragraph("No dispute was detected in this session.", styles["disclaimer"])
+        )
+
+        doc.build(
+            story,
+            onFirstPage=_FooterCanvas,
+            onLaterPages=_FooterCanvas,
+        )
+        return buf.getvalue()
+
+    # -----------------------------------------------------------------------
+    # DISPUTE KIND — full report (existing logic below)
+    # -----------------------------------------------------------------------
 
     # Dispute type badge (just a bold paragraph line — no box drawing needed)
     dispute = (report.dispute_type or "UNKNOWN").upper()

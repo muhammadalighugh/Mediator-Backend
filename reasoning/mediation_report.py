@@ -36,7 +36,7 @@ import assemblyai as aai
 from core.config import settings
 from core.session import Session
 from evidence.evidence_matcher import match_claims
-from models.enums import VerdictType
+from models.enums import StatementType, VerdictType
 from models.schemas import MediationReport, SpeakerAssessment, Utterance
 from reasoning.claim_extractor import extract_claims
 from reasoning.contradiction_detector import detect_contradictions
@@ -713,6 +713,55 @@ async def build_report(session: Session) -> MediationReport:
     claims = list(session.claims)
 
     # ----------------------------------------------------------------
+    # (b.1) Trivial-session detection — short-circuit before heavy LLM steps
+    #
+    # A session is "trivial" (just conversation, nothing to mediate) when:
+    #   • 0 claims were extracted, OR
+    #   • fewer than 4 utterances AND no CLAIM-type statements in the transcript
+    #
+    # For trivial sessions we skip steps (c)–(e) entirely and emit a
+    # lightweight "conversation" report instead.
+    # ----------------------------------------------------------------
+    n_utterances = len(canonical_utterances)
+    has_claim_type = any(
+        c.statement_type == StatementType.CLAIM for c in claims
+    )
+    is_trivial = (len(claims) == 0) or (n_utterances < 4 and not has_claim_type)
+
+    if is_trivial:
+        # Build a human-readable name list from the session speakers.
+        spk_names = [s.display_name for s in session.speakers]
+        if spk_names:
+            names_str = " and ".join(spk_names) if len(spk_names) <= 2 else ", ".join(spk_names)
+        else:
+            names_str = "the participants"
+
+        friendly_summary = (
+            f"No dispute detected — {names_str} talked, but no checkable claims were made. "
+            "Nothing to mediate. Start a new session when there's something to sort out."
+        )
+        logger.info(
+            "[REPORT] trivial session (%d utterances, %d claims) — friendly mode",
+            n_utterances, len(claims),
+        )
+
+        report = MediationReport(
+            session_id=sid,
+            claims=[],
+            verdicts=[],
+            contradictions=[],
+            agreements=[],
+            dispute_type="conversation",
+            summary=friendly_summary,
+            assessments=[],
+            report_kind="conversation",
+        )
+
+        session.report = report  # type: ignore[attr-defined]
+        logger.info("[REPORT] [%s] done (trivial): conversation kind, 0 claims", sid)
+        return report
+
+    # ----------------------------------------------------------------
     # (c) Contradictions, agreements, dispute type
     # ----------------------------------------------------------------
     logger.info("[REPORT] [%s] pipeline step reached: contradictions (%d claims)", sid, len(claims))
@@ -789,6 +838,7 @@ async def build_report(session: Session) -> MediationReport:
         dispute_type=dispute_type,
         summary=summary,
         assessments=assessments,
+        report_kind="dispute",
     )
 
     # Store on session for GET /report/{session_id}
