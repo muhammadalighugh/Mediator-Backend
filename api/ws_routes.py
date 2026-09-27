@@ -56,6 +56,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from core.config import settings
 from core.security import decode_token
 from core.session import session_manager
+from assemblyai.streaming.v3.models import SpeakerRevisionEvent
 from models.schemas import EnrollmentRecord
 from reasoning.enrollment import extract_name
 from transcription.assemblyai_client import AssemblyAIClient
@@ -249,7 +250,7 @@ async def session_ws(websocket: WebSocket, session_id: str, token: str = "", use
     # Ensure session + transcriber exist (idempotent).
     # Creates them the first time; subsequent calls are no-ops.
     # ------------------------------------------------------------------
-    async def _ensure_session_and_transcriber() -> None:
+    async def _ensure_session_and_transcriber(num_speakers: int | None = None) -> None:
         nonlocal session, transcriber
 
         if session is None:
@@ -268,7 +269,11 @@ async def session_ws(websocket: WebSocket, session_id: str, token: str = "", use
             transcriber.on_turn(
                 lambda turn: turn_handler_ref[0](turn) if turn_handler_ref[0] else None
             )
-            await transcriber.connect(sample_rate=settings.sample_rate, session_id=session_id)
+            await transcriber.connect(
+                sample_rate=settings.sample_rate,
+                session_id=session_id,
+                num_speakers=num_speakers,
+            )
 
     # ------------------------------------------------------------------
     # Message loop
@@ -300,7 +305,7 @@ async def session_ws(websocket: WebSocket, session_id: str, token: str = "", use
                 slot: int = int(frame.get("slot", 1))
                 logger.info("Enrollment slot %d starting, session %s", slot, session_id)
 
-                await _ensure_session_and_transcriber()
+                await _ensure_session_and_transcriber(num_speakers=2)
 
                 loop = asyncio.get_running_loop()
                 enrollment_future = loop.create_future()
@@ -389,7 +394,7 @@ async def session_ws(websocket: WebSocket, session_id: str, token: str = "", use
                 raw_names: list[str] = frame.get("speakers", [])
                 speaker_names: list[str] = raw_names if raw_names else ["Unknown", "Unknown"]
 
-                await _ensure_session_and_transcriber()
+                await _ensure_session_and_transcriber(num_speakers=len(speaker_names) or 2)
 
                 mapper = SpeakerMapper(speaker_names)
 
@@ -445,6 +450,76 @@ async def session_ws(websocket: WebSocket, session_id: str, token: str = "", use
 
                 # Route all SDK turns to StreamHandler
                 turn_handler_ref[0] = handler.handle_turn
+
+                # ----------------------------------------------------------
+                # SpeakerRevision handler — corrects live speaker attribution
+                # when the SDK's offline reclustering reassigns turn labels.
+                # Fires after end-of-session disconnect (end-of-session only
+                # in SDK v1.5.5 — no mid-session interval param available).
+                # ----------------------------------------------------------
+                async def _apply_speaker_revision(
+                    revision: SpeakerRevisionEvent,
+                    _session=session,
+                    _mapper=mapper,
+                    _handler=handler,
+                ) -> None:
+                    sid = _session.id
+                    corrected = 0
+                    broadcasts = []
+
+                    async with _session._lock:
+                        for item in revision.revisions:
+                            if item.speaker_label is None:
+                                # No revised label for this turn — nothing to correct
+                                continue
+
+                            new_speaker_id = _mapper.resolve(item.speaker_label)
+                            if new_speaker_id is None:
+                                logger.warning(
+                                    "[REVISION] [%s] turn_order=%d: label %r resolved to None — skipping",
+                                    sid, item.turn_order, item.speaker_label,
+                                )
+                                continue
+
+                            for i, utt in enumerate(_session.utterances):
+                                if utt.turn_order != item.turn_order:
+                                    continue
+                                if utt.speaker_id == new_speaker_id:
+                                    break  # already correct
+                                old_id = utt.speaker_id
+                                _session.utterances[i] = utt.model_copy(
+                                    update={"speaker_id": new_speaker_id}
+                                )
+                                corrected += 1
+                                logger.info(
+                                    "[REVISION] [%s] turn_order=%d: corrected speaker %r -> %r",
+                                    sid, item.turn_order, old_id, new_speaker_id,
+                                )
+                                broadcasts.append({
+                                    "type": "transcript_revised",
+                                    "utterance_id": utt.id,
+                                    "turn_order": item.turn_order,
+                                    "speaker_id": new_speaker_id,
+                                })
+                                break  # turn_order is unique per utterance
+
+                    logger.info(
+                        "[REVISION] [%s] applied %d correction(s) from %d revision item(s)",
+                        sid, corrected, len(revision.revisions),
+                    )
+
+                    for msg in broadcasts:
+                        await _handler._broadcast(msg)
+
+                def _revision_sync_wrapper(revision: SpeakerRevisionEvent) -> None:
+                    """Sync shim: schedules the async handler on the running loop."""
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(_apply_speaker_revision(revision))
+                    except RuntimeError:
+                        asyncio.run(_apply_speaker_revision(revision))
+
+                transcriber.on_speaker_revision(_revision_sync_wrapper)
 
                 logger.info(
                     "Session %s started — speakers: %s", session_id, speaker_names

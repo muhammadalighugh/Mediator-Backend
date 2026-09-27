@@ -260,7 +260,7 @@ async def extract_claims(
 class ClaimExtractionCoordinator:
     """Tracks utterance count and fires extraction tasks with at-most-one-in-flight."""
 
-    BATCH_THRESHOLD = 3  # trigger after every N new final utterances
+    BATCH_THRESHOLD = 1  # trigger after every new final utterance
 
     def __init__(self, session: "Session") -> None:
         self._session = session
@@ -301,6 +301,18 @@ class ClaimExtractionCoordinator:
                 await self._broadcast_claims()
         except Exception as exc:
             logger.exception("Claim extraction failed: %s", exc)
+            await self._broadcast_error(f"Claim extraction failed: {exc}")
+        finally:
+            # If utterances arrived while this task was in flight, process them now.
+            await self.on_new_utterance()
+
+    async def _broadcast_error(self, detail: str) -> None:
+        payload = json.dumps({"type": "error", "detail": detail})
+        for ws in list(self._ws_clients):
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                pass
 
     async def _broadcast_claims(self) -> None:
         payload = json.dumps({

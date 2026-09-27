@@ -46,6 +46,7 @@ class Utterance(BaseModel):
     is_final: bool
     start_ms: int
     end_ms: int
+    turn_order: Optional[int] = None  # AssemblyAI realtime turn index; used to apply SpeakerRevision corrections
 
 
 class Claim(BaseModel):

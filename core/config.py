@@ -30,13 +30,25 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Warn loudly at startup if the key is missing — prevents the cryptic
-# "Unauthorized" error from AssemblyAI that only surfaces at connect time.
+# Warn loudly at startup if keys are missing or placeholder — prevents silent
+# runtime failures where transcription works but claims/reports never appear.
 if not settings.assemblyai_api_key:
     print(
         "\n"
         "  ⚠️  WARNING: ASSEMBLYAI_API_KEY is not set in .env\n"
         "  Streaming sessions will fail with HTTP 1008 Unauthorized.\n"
         "  Get your key at https://www.assemblyai.com/dashboard\n",
+        file=sys.stderr,
+    )
+
+if not settings.llm_api_key:
+    print(
+        "\n"
+        "  ⚠️  WARNING: LLM_API_KEY is not set in .env\n"
+        "  Claim extraction and report generation will silently fail.\n"
+        "  Claims will never appear on the ClaimBoard during live sessions.\n"
+        f"  Provider: {settings.llm_provider}\n"
+        "  • OpenAI:    https://platform.openai.com/api-keys\n"
+        "  • Anthropic: https://console.anthropic.com/\n",
         file=sys.stderr,
     )

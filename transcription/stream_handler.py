@@ -189,6 +189,7 @@ class StreamHandler:
                 is_final=True,
                 start_ms=start_ms,
                 end_ms=end_ms,
+                turn_order=turn.turn_order,
             )
             await self._session.add_utterance(utterance)
             logger.info(
