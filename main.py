@@ -42,11 +42,16 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(title="MediFact API", version="0.3.0", lifespan=lifespan)
 
-# CORS — allow all origins for local development
+# CORS — read from settings so production can restrict to the Vercel frontend.
+# Set ALLOWED_ORIGINS=https://mediator-front-psi.vercel.app in the deployment env.
+_origins = (
+    ["*"] if settings.allowed_origins.strip() == "*"
+    else [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_credentials=_origins != ["*"],  # credentials require explicit origins
     allow_methods=["*"],
     allow_headers=["*"],
 )

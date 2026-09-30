@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # Auth — secret used to sign session tokens (HMAC-SHA256)
     jwt_secret: str = "change-me-in-production"
 
+    # CORS — comma-separated list of allowed origins.
+    # Defaults to "*" for local dev; override in production.
+    # Example: ALLOWED_ORIGINS=https://mediator-front-psi.vercel.app,http://localhost:3000
+    allowed_origins: str = "*"
+
 
 settings = Settings()
 
