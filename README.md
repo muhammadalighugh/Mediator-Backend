@@ -1,4 +1,6 @@
-﻿# Argument Mediator — Backend
+# Argument Mediator — Backend
+
+> **GitHub:** [github.com/muhammadalighugh/Mediator-Backend](https://github.com/muhammadalighugh/Mediator-Backend)
 
 FastAPI server that powers live transcription, claim extraction, evidence matching, contradiction detection, and final mediation report generation.
 
@@ -187,3 +189,15 @@ end_session received
 | `LLM_API_KEY` | ✅ | Key for the chosen LLM provider |
 | `LLM_MODEL` | ➖ | Override model name (blank = provider default) |
 | `SAMPLE_RATE` | ➖ | Audio sample rate in Hz (default `16000`) |
+| `MONGODB_URI` | ✅ | MongoDB Atlas connection string (required for auth) |
+| `JWT_SECRET` | ✅ | Long random string used to sign session tokens |
+| `ALLOWED_ORIGINS` | ➖ | Comma-separated CORS origins (default `*`; set to Vercel URL in prod) |
+
+---
+
+## Frontend
+
+The Next.js frontend is deployed separately on **Vercel**:
+
+- **GitHub:** [github.com/muhammadalighugh/Mediator-Front](https://github.com/muhammadalighugh/Mediator-Front)
+- **Live URL:** `https://mediator-front-psi.vercel.app`
