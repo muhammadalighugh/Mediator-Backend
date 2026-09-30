@@ -15,16 +15,11 @@ openai>=1.30.0
 chromadb>=0.5.0
 sentence-transformers>=3.0.0
 pypdf>=4.0.0
-# Voice identification
-# NOTE: webrtcvad requires MSVC on Windows (no cp314 wheel exists).
-# Install resemblyzer with --no-deps to skip webrtcvad, then install its
-# other deps separately:
-#   pip install --no-deps resemblyzer
-#   pip install librosa soundfile numba llvmlite pooch soxr lazy_loader msgpack decorator
-# resemblyzer/audio.py is patched in the venv to guard the webrtcvad import.
+# Voice identification (Linux/Render: installs fine via pip)
 resemblyzer>=0.1.4
 librosa>=0.9.1
 soundfile>=0.12.1
 numba>=0.61.0
 # Auth — password hashing + JWT
+bcrypt>=4.0.0
 python-jose[cryptography]>=3.3.0
